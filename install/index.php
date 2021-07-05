@@ -70,7 +70,7 @@ class frisbee_frisbee extends CModule
             "PSA_NAME" => "Frisbee",
             "CODE" => "frisbee",
             "SORT" => "200",
-            "DESCRIPTION" => "Frisbee",
+            "DESCRIPTION" => "Buy now pay later with Frisbee",
             "NEW_WINDOW" => "N",
             "HAVE_PAYMENT" => "Y",
             "HAVE_ACTION" => "N",
