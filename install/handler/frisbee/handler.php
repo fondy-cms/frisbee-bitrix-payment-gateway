@@ -20,7 +20,6 @@ Loc::loadMessages(__FILE__);
  * @package Sale\Handlers\PaySystem
  */
 class FrisbeeHandler extends PaySystem\ServiceHandler
-    //implements PaySystem\IPrePayable
 {
     const DELIMITER_PAYMENT_ID = ':';
 
