@@ -154,20 +154,21 @@ class FrisbeeResult
         }
 
         $this->frisbee->setMerchantId($this->parameters['MERCHANT_ID']);
-        $this->frisbee->setMerchantId($this->parameters['SECRET_KEY']);
+        $this->frisbee->setKey($this->parameters['SECRET_KEY']);
         $this->frisbee->parseOrderId($this->data['order_id']);
-        
+
         $orderId = $this->frisbee->getOrderId();
 
+        /**
+         * @var \Bitrix\Sale\Order $order
+         */
         $order = $this->findOrder($orderId);
-        $frisbeeResult = $this->frisbee->isPaymentValid($_REQUEST);
+        $frisbeeResult = $this->frisbee->isPaymentValid($this->data);
 
-        if ($_POST['order_status'] != Frisbee::ORDER_APPROVED) {
+        if ($this->data['order_status'] != Frisbee::ORDER_APPROVED) {
             $answer = 'declined';
         } elseif ($frisbeeResult == true) {
             $answer = 'OK';
-            $order->setField('STATUS_ID', 'P');
-            $order->save();
             $order->getPaymentCollection()->offsetGet(0)->setPaid('Y');
         } else {
             $answer = $frisbeeResult;
@@ -175,22 +176,26 @@ class FrisbeeResult
 
         if ($order) {
             $arFields = array(
-                "STATUS_ID" => $answer == 'OK' ? "P" : "N",
-                "PAYED" => $answer == 'OK' ? "Y" : "N",
-                "PS_STATUS" => $answer == 'OK' ? "Y" : "N",
-                "PS_STATUS_CODE" => $_POST['order_status'],
-                "PS_STATUS_DESCRIPTION" => $_POST['order_status'] . " " . $this->paySystem['ID'] . " " .
-                    ($answer != 'OK' ? $_POST['response_description'] : ''),
-                "PS_STATUS_MESSAGE" => " - ",
-                "PS_SUM" => $_POST['amount'],
-                "PS_CURRENCY" => $_POST['currency'],
-                "PS_RESPONSE_DATE" => date("d.m.Y H:i:s"),
+                'STATUS_ID' => $answer == 'OK' ? 'P' : 'N',
+                'PAYED' => $answer == 'OK' ? 'Y' : 'N',
+                'PS_STATUS' => $answer == 'OK' ? 'Y' : 'N',
+                'PS_STATUS_CODE' => $this->data['order_status'],
+                'PS_STATUS_DESCRIPTION' => $this->data['order_status'] . ' ' . $this->paySystem['ID'] . ' ' .
+                    ($answer != 'OK' ? $this->data['response_description'] : ''),
+                'PS_STATUS_MESSAGE' => $this->data['order_status'],
+                'PS_SUM' => $this->data['amount'],
+                'PS_CURRENCY' => $this->data['currency'],
+                'PS_RESPONSE_DATE' => date('m/d/Y h:i:s a'),
             );
+
+            if ($this->data['order_status'] === Frisbee::ORDER_REJECTED) {
+                $arFields['CANCELED'] = 'Y';
+                $arFields['DATE_CANCELED'] = date("m/d/Y h:i:s a");
+            }
+
+            CSaleOrder::Update($orderId, $arFields);
         }
-        if ($_POST['order_status'] === Frisbee::ORDER_APPROVED || $_POST['order_status'] === Frisbee::ORDER_DECLINED) {
-            $order->setFields($arFields);
-            $order->save();
-        }
+
         echo $answer . "<script>window.location.replace('/personal/orders/');</script>";
     }
 }

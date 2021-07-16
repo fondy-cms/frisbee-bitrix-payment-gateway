@@ -3,7 +3,7 @@
 class Frisbee
 {
     public const ORDER_APPROVED = 'approved';
-    public const ORDER_DECLINED = 'declined';
+    public const ORDER_REJECTED = 'rejected';
     public const ORDER_SEPARATOR = ':';
     public const SIGNATURE_SEPARATOR = '|';
 
@@ -46,7 +46,7 @@ class Frisbee
     {
         return $this->createdAt;
     }
-    
+
     public function setMerchantId($merchantId)
     {
         $this->merchantId = $merchantId;
@@ -57,7 +57,7 @@ class Frisbee
         $this->key = $key;
     }
 
-    public function parseOrderId($orderId) 
+    public function parseOrderId($orderId)
     {
         [$this->orderId, $this->createdAt] = explode(self::ORDER_SEPARATOR, $orderId);
     }
@@ -88,7 +88,6 @@ class Frisbee
      */
     public function isPaymentValid($response): bool
     {
-
         if ($this->merchantId != $response['merchant_id']) {
             throw new Exception('An error has occurred during payment. Merchant data is incorrect.');
         }

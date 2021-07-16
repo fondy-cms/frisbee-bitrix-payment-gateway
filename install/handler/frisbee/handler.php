@@ -12,18 +12,20 @@ use Bitrix\Main\Localization\Loc;
 use Bitrix\Main\Web\HttpClient;
 use Bitrix\Sale\PriceMaths;
 use Bitrix\Sale\Registry;
+use Bitrix\Crm\Order\Order;
 
 Loc::loadMessages(__FILE__);
 
 /**
  * Class FrisbeeHandler
+ *
  * @package Sale\Handlers\PaySystem
  */
 class FrisbeeHandler extends PaySystem\ServiceHandler
 {
     const DELIMITER_PAYMENT_ID = ':';
 
-    private $prePaymentSetting = array();
+    private $prePaymentSetting = [];
 
     /**
      * @param Payment $payment
@@ -40,28 +42,33 @@ class FrisbeeHandler extends PaySystem\ServiceHandler
         $order = $payment->getOrder();
         $orderId = $order->getId();
 
-        $params = [
-            'AMOUNT' => $payment->getSum() * 100,
-            'CURRENCY' => $order->getCurrency(),
-            'LANG' => \Bitrix\Main\Application::getInstance()->getContext()->getLanguage(),
-            'MERCHANT_ID' => $busValues['MERCHANT_ID'],
-            'ORDER_DESC' => $payment->getField('USER_DESCRIPTION') ?: $orderId,
-            'ORDER_ID' => sprintf('%s:%s', $orderId, time()),
-            'PAYMENT_SYSTEMS' => 'frisbee',
-            'SENDER_EMAIL' => $order->getPropertyCollection()->getUserEmail()->getValue(),
-            'SERVER_CALLBACK_URL' => $this->getPathResultUrl($payment),
-        ];
+        try {
+            $url = $this->generateFrisbeeUrl($payment, $order, $busValues);
+            LocalRedirect($url);
+        } catch (\Exception $exception) {
+            $params = [
+                'AMOUNT' => $payment->getSum() * 100,
+                'CURRENCY' => $order->getCurrency(),
+                'LANG' => \Bitrix\Main\Application::getInstance()->getContext()->getLanguage(),
+                'MERCHANT_ID' => $busValues['MERCHANT_ID'],
+                'ORDER_DESC' => $payment->getField('USER_DESCRIPTION') ?: $orderId,
+                'ORDER_ID' => sprintf('%s:%s', $orderId, time()),
+                'PAYMENT_SYSTEMS' => 'frisbee',
+                'SENDER_EMAIL' => $order->getPropertyCollection()->getUserEmail()->getValue(),
+                'SERVER_CALLBACK_URL' => $this->getPathResultUrl($payment),
+            ];
 
-        if (strtoupper($busValues['CURRENCY']) == "RUR") {
-            $params['CURRENCY'] = "RUB";
+            if (strtoupper($busValues['CURRENCY']) == "RUR") {
+                $params['CURRENCY'] = "RUB";
+            }
+
+            $params['SIGNATURE'] = $this->getSignature($params, $busValues['SECRET_KEY']);
+            $params['URL'] = $this->getPaymentUrl($busValues);
+
+            $this->setExtraParams($params);
+
+            return $this->showTemplate($payment, "template");
         }
-
-        $params['SIGNATURE'] = $this->getSignature($params, $busValues['SECRET_KEY']);
-        $params['URL'] = $this->getPaymentUrl($params);
-
-        $this->setExtraParams($params);
-
-        return $this->showTemplate($payment, "template");
     }
 
     /**
@@ -69,7 +76,7 @@ class FrisbeeHandler extends PaySystem\ServiceHandler
      */
     public static function getIndicativeFields()
     {
-        return array('SECRET_KEY', 'MERCHANT_ID');
+        return ['SECRET_KEY', 'MERCHANT_ID'];
     }
 
     /**
@@ -78,10 +85,7 @@ class FrisbeeHandler extends PaySystem\ServiceHandler
      */
     public function getPaymentIdFromRequest(Request $request)
     {
-        $orderId = $this->getValueByTag($this->getOperationXml($request), 'order_id');
-        var_dump($orderId, 'payid');exit;
-
-        return str_replace("PAYMENT_", "", $orderId);
+        return $request->get('orderNumber');
     }
 
     /**
@@ -103,32 +107,7 @@ class FrisbeeHandler extends PaySystem\ServiceHandler
      */
     public function processRequest(Payment $payment, Request $request)
     {
-        var_dump('process');exit;
-        $result = new PaySystem\ServiceResult();
 
-        if ($request->get('signature') === null || $request->get('operation_xml') === null) {
-            $errorMessage = Loc::getMessage('SALE_HPS_LIQPAY_POST_ERROR');
-            $result->addError(new Error($errorMessage));
-
-            PaySystem\Logger::addError('LiqPay: processRequest: '.$errorMessage);
-        }
-
-        $status = $this->getValueByTag($this->getOperationXml($request), 'status');
-
-        if ($this->isCorrectHash($payment, $request)) {
-            if ($status === 'success' || $status === 'wait_reserve') {
-                return $this->processNoticeAction($payment, $request);
-            }
-
-            if ($status === 'wait_secure') {
-                return new PaySystem\ServiceResult();
-            }
-        } else {
-            PaySystem\Logger::addError('LiqPay: processRequest: Incorrect hash');
-            $result->addError(new Error('Incorrect hash'));
-        }
-
-        return $result;
     }
 
     /**
@@ -139,18 +118,54 @@ class FrisbeeHandler extends PaySystem\ServiceHandler
         return ['RUB', 'USD', 'EUR', 'UAH'];
     }
 
+    private function generateFrisbeeUrl(Payment $payment, Order $order, $busValues)
+    {
+        $orderId = $order->getId();
+        $params = [
+            'order_id' => sprintf('%s:%s', $orderId, time()),
+            'merchant_id' => $busValues['MERCHANT_ID'],
+            'order_desc' => $payment->getField('USER_DESCRIPTION') ?: "Order #$orderId",
+            'amount' => $payment->getSum() * 100,
+            'server_callback_url' => $this->getPathResultUrl($payment),
+            'response_url' => $this->getReturnUrl($payment),
+            'lang' => \Bitrix\Main\Application::getInstance()->getContext()->getLanguage(),
+            'sender_email' => $order->getPropertyCollection()->getUserEmail()->getValue(),
+            'payment_systems' => 'frisbee',
+            'default_payment_system' => 'frisbee',
+        ];
+
+        if (strtoupper($busValues['CURRENCY']) == "RUR") {
+            $params['currency'] = "RUB";
+        } else {
+            $params['currency'] = $order->getCurrency();
+        }
+
+        $params['signature'] = $this->getSignature($params, $busValues['SECRET_KEY']);
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $this->getPaymentUrl($busValues));
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-type: application/json']);
+        curl_setopt($ch, CURLOPT_POST, true);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode(['request' => $params]));
+        $result = json_decode(curl_exec($ch));
+
+        if (!isset($result->response->response_status)) {
+            throw new \Exception('Unsuccessful response from API');
+        } elseif ($result->response->response_status == 'success') {
+            return $result->response->checkout_url;
+        } else {
+            throw new \Exception(sprintf('Error message from the API: %s', $result->response->error_message));
+        }
+    }
+
     /**
      * @param Payment $payment
      * @return mixed|string
      */
     private function getPathResultUrl(Payment $payment)
     {
-        $url = sprintf('%s://%s/%s',
-            stripos($_SERVER['SERVER_PROTOCOL'],'https') === 0 ? 'https' : 'http',
-            $_SERVER['HTTP_HOST'],
-            'bitrix/tools/frisbee_result/frisbee_result.php'
-        );
-        $url = $this->getBusinessValue($payment, 'RESPONSE_URL') ?: $url;
+        $url = sprintf('%s://%s/%s', stripos($_SERVER['SERVER_PROTOCOL'], 'https') === 0 ? 'https' : 'http', $_SERVER['HTTP_HOST'], 'bitrix/tools/frisbee_result/frisbee_result.php');
 
         return str_replace('&', '&amp;', $url);
     }
@@ -161,7 +176,7 @@ class FrisbeeHandler extends PaySystem\ServiceHandler
      */
     private function getReturnUrl(Payment $payment)
     {
-        return $this->getBusinessValue($payment, 'PAYPAL_RETURN') ?: $this->service->getContext()->getUrl();
+        return $this->getBusinessValue($payment, 'RESPONSE_URL') ?: $this->service->getContext()->getUrl();
     }
 
     /**
@@ -189,14 +204,14 @@ class FrisbeeHandler extends PaySystem\ServiceHandler
         }
     }
 
-    private function getPaymentUrl($params)
+    private function getPaymentUrl($params, $redirect = false)
     {
         $apiHost = 'https://api.fondy.eu';
 
         if (isset($params['IS_TEST']) && $params['IS_TEST']) {
-            $apiHost = 'https://public.dev.cipsp.net';
+            $apiHost = 'https://dev2.pay.fondy.eu';
         }
 
-        return sprintf('%s/api/checkout/redirect/', $apiHost);
+        return sprintf('%s/api/checkout/%s/', $apiHost, ($redirect ? 'redirect' : 'url'));
     }
 }
